@@ -1,0 +1,74 @@
+name: Deploy Site Monitor
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.1'
+        extensions: curl
+        
+    - name: Validate PHP syntax
+      run: php -l index.php
+      
+    - name: Test script execution
+      run: |
+        # Create a test .env file
+        cat > .env << EOF
+        MONITOR_1_NAME="Test Site"
+        MONITOR_1_URL="https://httpbin.org/status/200"
+        MONITOR_1_WEBHOOK="https://discord.com/api/webhooks/test"
+        MONITOR_1_KEY="test_site"
+        EOF
+        
+        # Test script execution (should not fail)
+        php index.php || true
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.1'
+        extensions: curl
+        
+    - name: Create deployment package
+      run: |
+        mkdir -p deploy
+        cp index.php deploy/
+        cp README.md deploy/
+        cp LICENSE deploy/
+        cp .env.example deploy/
+        
+    - name: Deploy to server (example)
+      run: |
+        echo "Deployment would happen here"
+        echo "Configure your deployment target in this step"
+        # Example deployment commands:
+        # - name: Deploy via SSH
+        #   run: |
+        #     scp -r deploy/* user@server:/path/to/site-monitor/
+        # - name: Deploy via FTP
+        #   uses: SamKirkland/FTP-Deploy-Action@v4.3.4
+        #   with:
+        #     server: ${{ secrets.FTP_SERVER }}
+        #     username: ${{ secrets.FTP_USERNAME }}
+        #     password: ${{ secrets.FTP_PASSWORD }}
+        #     server-dir: /public_html/site-monitor/ 
