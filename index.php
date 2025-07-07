@@ -13,36 +13,28 @@ define('USER_AGENT', 'SiteMonitor/1.0');
 /**
  * Load environment variables from .env file
  */
-function loadEnv($envFile = '.env') {
-    if (!file_exists($envFile)) {
-        die("Error: .env file not found!\n");
+function loadEnv($envFile = null) {
+    if ($envFile === null) {
+        $envFile = __DIR__ . '/.env';
     }
-    
+
+    if (!file_exists($envFile)) {
+        die("Error: .env file not found at $envFile\n");
+    }
+
     $lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     $env = [];
-    
+
     foreach ($lines as $line) {
-        // Ignore comments
-        if (strpos(trim($line), '#') === 0) {
-            continue;
-        }
-        
-        // Check if line contains '='
+        if (strpos(trim($line), '#') === 0) continue;
         if (strpos($line, '=') !== false) {
             list($key, $value) = explode('=', $line, 2);
             $key = trim($key);
-            $value = trim($value);
-            
-            // Remove quotes if they exist
-            if ((substr($value, 0, 1) === '"' && substr($value, -1) === '"') ||
-                (substr($value, 0, 1) === "'" && substr($value, -1) === "'")) {
-                $value = substr($value, 1, -1);
-            }
-            
+            $value = trim($value, " \t\n\r\0\x0B\"'");
             $env[$key] = $value;
         }
     }
-    
+
     return $env;
 }
 
@@ -94,25 +86,26 @@ function checkSiteStatus($url) {
         CURLOPT_FOLLOWLOCATION => true,
         CURLOPT_TIMEOUT => TIMEOUT,
         CURLOPT_CONNECTTIMEOUT => 10,
-        CURLOPT_USERAGENT => USER_AGENT,
+        CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         CURLOPT_SSL_VERIFYPEER => false,
         CURLOPT_SSL_VERIFYHOST => false,
-        CURLOPT_NOBODY => true, // Only check status, don't download content
     ]);
     
     $response = curl_exec($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $error = curl_error($ch);
     $curlInfo = curl_getinfo($ch);
+    $responseSize = isset($curlInfo['size_download']) ? $curlInfo['size_download'] : (is_string($response) ? strlen($response) : 0);
     
     curl_close($ch);
     
     return [
-        'success' => $response !== false && $httpCode === 200,
+        'success' => $response !== false && in_array($httpCode, [200, 204, 301, 302]),
         'http_code' => $httpCode,
         'error' => $error,
         'response_time' => $curlInfo['total_time'] ?? 0,
-        'url' => $url
+        'url' => $url,
+        'response_size' => $responseSize
     ];
 }
 
@@ -123,7 +116,7 @@ function sendWebhookAlert($webhookUrl, $siteName, $status, $details) {
     $timestamp = date('c');
     
     $embed = [
-        'title' => $status === 'down' ? '🚨 Site Offline' : '✅ Site Online',
+        'title' => $status === 'down' ? '🚨 Site Offline' : ($status === 'up' ? '✅ Site Online' : '✅ Site Online'),
         'description' => "**{$siteName}** - {$details}",
         'color' => $status === 'down' ? 0xFF0000 : 0x00FF00,
         'timestamp' => $timestamp,
@@ -182,27 +175,61 @@ function monitorSite($site) {
     
     $status = checkSiteStatus($site['url']);
     
+    // Adiciona debug: mostra código HTTP e erro, se houver
+    echo "[HTTP: {$status['http_code']}] ";
+    if ($status['error']) {
+        echo "[cURL error: {$status['error']}] ";
+    }
+
+    // Obter IP de destino
+    $host = parse_url($site['url'], PHP_URL_HOST);
+    $ip = gethostbyname($host);
+
+    // User-Agent usado
+    $userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+    // Tipo de requisição
+    $requestType = 'GET';
+
+    // Tamanho da resposta
+    $responseSize = isset($status['response_size']) ? $status['response_size'] : '-';
+
+    // Caminho do arquivo de status
+    $logDir = "logs/{$site['monitor_key']}";
+    $statusFile = $logDir . '/last_status.txt';
+    if (!is_dir($logDir)) {
+        mkdir($logDir, 0755, true);
+    }
+    $lastStatus = file_exists($statusFile) ? trim(file_get_contents($statusFile)) : 'unknown';
+
     if ($status['success']) {
-        $message = "[OK] {$site['name']} is online. HTTP {$status['http_code']} - Time: " . round($status['response_time'], 2) . "s";
+        $message = "[OK] {$site['name']} | URL: {$site['url']} | HTTP: {$status['http_code']} | Tempo: " . round($status['response_time'], 2) . "s | User-Agent: {$userAgent} | IP: {$ip} | Tamanho: {$responseSize} bytes | Tipo: {$requestType} | Status: online";
         echo "✅ OK\n";
         writeLog($site['monitor_key'], $message);
+        // Se estava offline antes, notificar recuperação
+        if ($lastStatus === 'offline') {
+            $webhookMessage = "Site {$site['name']} está online novamente. HTTP {$status['http_code']}";
+            $webhookSent = sendWebhookAlert($site['webhook'], $site['name'], 'up', $webhookMessage);
+            if ($webhookSent) {
+                writeLog($site['monitor_key'], "[WEBHOOK] Recovery alert sent successfully");
+            } else {
+                writeLog($site['monitor_key'], "[WEBHOOK] Error sending recovery alert");
+            }
+        }
+        file_put_contents($statusFile, 'online');
     } else {
-        $errorDetails = $status['error'] ? "Error: {$status['error']}" : "HTTP {$status['http_code']}";
-        $message = "[ALERT] {$site['name']} is down. {$errorDetails}";
+        $errorDetails = $status['error'] ? "Erro: {$status['error']}" : "HTTP {$status['http_code']}";
+        $message = "[ALERT] {$site['name']} | URL: {$site['url']} | HTTP: {$status['http_code']} | Tempo: " . round($status['response_time'], 2) . "s | User-Agent: {$userAgent} | IP: {$ip} | Tamanho: {$responseSize} bytes | Tipo: {$requestType} | Status: offline | {$errorDetails}";
         echo "❌ FAILED\n";
-        
-        // Log the error
         writeLog($site['monitor_key'], $message);
-        
-        // Send webhook alert
         $webhookMessage = "Site {$site['name']} is offline. {$errorDetails}";
         $webhookSent = sendWebhookAlert($site['webhook'], $site['name'], 'down', $webhookMessage);
-        
         if ($webhookSent) {
             writeLog($site['monitor_key'], "[WEBHOOK] Alert sent successfully");
         } else {
             writeLog($site['monitor_key'], "[WEBHOOK] Error sending alert");
         }
+        file_put_contents($statusFile, 'offline');
     }
 }
 
