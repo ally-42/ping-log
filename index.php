@@ -238,4 +238,3 @@ if (php_sapi_name() === 'cli' || !isset($_SERVER['HTTP_HOST'])) {
 } else {
     echo "This script must be executed via command line: php index.php";
 }
-?> 
