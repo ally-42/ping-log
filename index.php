@@ -1,6 +1,6 @@
 <?php
 /**
- * Site Monitor in PHP
+ * Monitor in PHP
  * Script to monitor site status and send alerts via webhook
  * 
  * Usage: php index.php
@@ -116,7 +116,7 @@ function sendWebhookAlert($webhookUrl, $siteName, $status, $details) {
     $timestamp = date('c');
     
     $embed = [
-        'title' => $status === 'down' ? '🚨 Site Offline' : ($status === 'up' ? '✅ Site Online' : '✅ Site Online'),
+        'title' => $status === 'down' ? '🚨 Service Offline' : ($status === 'up' ? '✅ Service Online' : '✅ Service Online'),
         'description' => "**{$siteName}** - {$details}",
         'color' => $status === 'down' ? 0xFF0000 : 0x00FF00,
         'timestamp' => $timestamp,
@@ -136,7 +136,7 @@ function sendWebhookAlert($webhookUrl, $siteName, $status, $details) {
         CURLOPT_POSTFIELDS => json_encode($data),
         CURLOPT_HTTPHEADER => [
             'Content-Type: application/json',
-            'User-Agent: SiteMonitor/1.0'
+            'User-Agent: ServiceMonitor/1.0'
         ],
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT => 10
@@ -324,10 +324,10 @@ function main() {
     $sites = extractSiteConfigs($env);
     
     if (empty($sites)) {
-        die("Error: No sites configured in .env file!\n");
+        die("Error: No monitors configured in .env file!\n");
     }
     
-    echo "Configured sites: " . count($sites) . "\n\n";
+    echo "Configured monitors: " . count($sites) . "\n\n";
     
     // Monitor each site
     foreach ($sites as $site) {
