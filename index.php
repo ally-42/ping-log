@@ -168,6 +168,69 @@ function writeLog($monitorKey, $message) {
 }
 
 /**
+ * Get last status from log analysis and check if notification was recently sent
+ */
+function getLastStatusFromLog($monitorKey) {
+    $logDir = "logs/{$monitorKey}";
+    $logFile = $logDir . '/' . date('Y-m-d') . '.log';
+    
+    // Se não existe log hoje, verificar logs anteriores
+    if (!file_exists($logFile)) {
+        // Procurar o log mais recente
+        $logFiles = glob($logDir . '/*.log');
+        if (empty($logFiles)) {
+            return ['status' => 'unknown', 'last_notification' => null];
+        }
+        
+        // Ordenar por data de modificação (mais recente primeiro)
+        usort($logFiles, function($a, $b) {
+            return filemtime($b) - filemtime($a);
+        });
+        
+        $logFile = $logFiles[0];
+    }
+    
+    // Ler as últimas linhas do log
+    $lines = file($logFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    if (empty($lines)) {
+        return ['status' => 'unknown', 'last_notification' => null];
+    }
+    
+    // Analisar as últimas 20 linhas para encontrar o último status e notificação
+    $recentLines = array_slice($lines, -20);
+    $lastStatus = 'unknown';
+    $lastNotification = null;
+    
+    foreach (array_reverse($recentLines) as $line) {
+        // Procurar por padrões que indiquem status
+        if (strpos($line, 'Status: online') !== false) {
+            $lastStatus = 'online';
+        }
+        if (strpos($line, 'Status: offline') !== false) {
+            $lastStatus = 'offline';
+        }
+        // Verificar por padrões de ALERT (offline) e OK (online)
+        if (strpos($line, '[ALERT]') !== false) {
+            $lastStatus = 'offline';
+        }
+        if (strpos($line, '[OK]') !== false) {
+            $lastStatus = 'online';
+        }
+        
+        // Verificar se foi enviada notificação recentemente
+        if (strpos($line, '[WEBHOOK]') !== false) {
+            // Extrair timestamp da linha
+            if (preg_match('/\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]/', $line, $matches)) {
+                $lastNotification = $matches[1];
+            }
+            break; // Parar na primeira notificação encontrada (mais recente)
+        }
+    }
+    
+    return ['status' => $lastStatus, 'last_notification' => $lastNotification];
+}
+
+/**
  * Main monitoring function
  */
 function monitorSite($site) {
@@ -194,20 +257,19 @@ function monitorSite($site) {
     // Tamanho da resposta
     $responseSize = isset($status['response_size']) ? $status['response_size'] : '-';
 
-    // Caminho do arquivo de status
+    // Obter último status através da análise do log
     $logDir = "logs/{$site['monitor_key']}";
-    $statusFile = $logDir . '/last_status.txt';
     if (!is_dir($logDir)) {
         mkdir($logDir, 0755, true);
     }
-    $lastStatus = file_exists($statusFile) ? trim(file_get_contents($statusFile)) : 'unknown';
+    $lastStatusInfo = getLastStatusFromLog($site['monitor_key']);
 
     if ($status['success']) {
         $message = "[OK] {$site['name']} | URL: {$site['url']} | HTTP: {$status['http_code']} | Tempo: " . round($status['response_time'], 2) . "s | User-Agent: {$userAgent} | IP: {$ip} | Tamanho: {$responseSize} bytes | Tipo: {$requestType} | Status: online";
         echo "✅ OK\n";
         writeLog($site['monitor_key'], $message);
         // Se estava offline antes, notificar recuperação
-        if ($lastStatus === 'offline') {
+        if ($lastStatusInfo['status'] === 'offline') {
             $webhookMessage = "Site {$site['name']} está online novamente. HTTP {$status['http_code']}";
             $webhookSent = sendWebhookAlert($site['webhook'], $site['name'], 'up', $webhookMessage);
             if ($webhookSent) {
@@ -216,20 +278,37 @@ function monitorSite($site) {
                 writeLog($site['monitor_key'], "[WEBHOOK] Error sending recovery alert");
             }
         }
-        file_put_contents($statusFile, 'online');
     } else {
         $errorDetails = $status['error'] ? "Erro: {$status['error']}" : "HTTP {$status['http_code']}";
         $message = "[ALERT] {$site['name']} | URL: {$site['url']} | HTTP: {$status['http_code']} | Tempo: " . round($status['response_time'], 2) . "s | User-Agent: {$userAgent} | IP: {$ip} | Tamanho: {$responseSize} bytes | Tipo: {$requestType} | Status: offline | {$errorDetails}";
         echo "❌ FAILED\n";
         writeLog($site['monitor_key'], $message);
-        $webhookMessage = "Site {$site['name']} is offline. {$errorDetails}";
-        $webhookSent = sendWebhookAlert($site['webhook'], $site['name'], 'down', $webhookMessage);
-        if ($webhookSent) {
-            writeLog($site['monitor_key'], "[WEBHOOK] Alert sent successfully");
-        } else {
-            writeLog($site['monitor_key'], "[WEBHOOK] Error sending alert");
+        
+        // Verificar se deve enviar notificação (evitar spam)
+        $shouldSendNotification = true;
+        
+        // Se já estava offline, verificar se a última notificação foi há mais de 30 minutos
+        if ($lastStatusInfo['status'] === 'offline' && $lastStatusInfo['last_notification']) {
+            $lastNotificationTime = strtotime($lastStatusInfo['last_notification']);
+            $currentTime = time();
+            $timeDiff = $currentTime - $lastNotificationTime;
+            
+            // Só enviar notificação se passou mais de 30 minutos desde a última
+            if ($timeDiff < 1800) { // 30 minutos = 1800 segundos
+                $shouldSendNotification = false;
+                writeLog($site['monitor_key'], "[WEBHOOK] Skipping notification - last alert was " . round($timeDiff / 60, 1) . " minutes ago");
+            }
         }
-        file_put_contents($statusFile, 'offline');
+        
+        if ($shouldSendNotification) {
+            $webhookMessage = "Site {$site['name']} is offline. {$errorDetails}";
+            $webhookSent = sendWebhookAlert($site['webhook'], $site['name'], 'down', $webhookMessage);
+            if ($webhookSent) {
+                writeLog($site['monitor_key'], "[WEBHOOK] Alert sent successfully");
+            } else {
+                writeLog($site['monitor_key'], "[WEBHOOK] Error sending alert");
+            }
+        }
     }
 }
 
