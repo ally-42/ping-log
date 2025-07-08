@@ -1,7 +1,7 @@
 <?php
 /**
- * Monitor in PHP
- * Script to monitor site status and send alerts via webhook
+ * Service Monitor in PHP
+ * Script to monitor service status and send alerts via webhook
  * 
  * Usage: php index.php
  */
@@ -39,21 +39,21 @@ function loadEnv($envFile = null) {
 }
 
 /**
- * Extract site configurations from environment variables array
+ * Extract monitor configurations from environment variables array
  */
-function extractSiteConfigs($env) {
-    $sites = [];
-    $siteCount = 0;
+function extractMonitorConfigs($env) {
+    $monitors = [];
+    $monitorCount = 0;
     
-    // Count how many sites exist
+    // Count how many monitors exist
     foreach ($env as $key => $value) {
         if (preg_match('/^MONITOR_(\d+)_NAME$/', $key, $matches)) {
-            $siteCount = max($siteCount, (int)$matches[1]);
+            $monitorCount = max($monitorCount, (int)$matches[1]);
         }
     }
     
-    // Extract configurations for each site
-    for ($i = 1; $i <= $siteCount; $i++) {
+    // Extract configurations for each monitor
+    for ($i = 1; $i <= $monitorCount; $i++) {
         $nameKey = "MONITOR_{$i}_NAME";
         $urlKey = "MONITOR_{$i}_URL";
         $webhookKey = "MONITOR_{$i}_WEBHOOK";
@@ -62,7 +62,7 @@ function extractSiteConfigs($env) {
         if (isset($env[$nameKey]) && isset($env[$urlKey]) && 
             isset($env[$webhookKey]) && isset($env[$monitorKey])) {
             
-            $sites[] = [
+            $monitors[] = [
                 'name' => $env[$nameKey],
                 'url' => $env[$urlKey],
                 'webhook' => $env[$webhookKey],
@@ -71,13 +71,13 @@ function extractSiteConfigs($env) {
         }
     }
     
-    return $sites;
+    return $monitors;
 }
 
 /**
- * Check site status via cURL
+ * Check service status via cURL
  */
-function checkSiteStatus($url) {
+function checkServiceStatus($url) {
     $ch = curl_init();
     
     curl_setopt_array($ch, [
@@ -112,16 +112,16 @@ function checkSiteStatus($url) {
 /**
  * Send alert to Discord webhook
  */
-function sendWebhookAlert($webhookUrl, $siteName, $status, $details) {
+function sendWebhookAlert($webhookUrl, $serviceName, $status, $details) {
     $timestamp = date('c');
     
     $embed = [
         'title' => $status === 'down' ? '🚨 Service Offline' : ($status === 'up' ? '✅ Service Online' : '✅ Service Online'),
-        'description' => "**{$siteName}** - {$details}",
+        'description' => "**{$serviceName}** - {$details}",
         'color' => $status === 'down' ? 0xFF0000 : 0x00FF00,
         'timestamp' => $timestamp,
         'footer' => [
-            'text' => 'Site Monitor'
+            'text' => 'Service Monitor'
         ]
     ];
     
@@ -150,7 +150,7 @@ function sendWebhookAlert($webhookUrl, $siteName, $status, $details) {
 }
 
 /**
- * Write log for a specific site
+ * Write log for a specific monitor
  */
 function writeLog($monitorKey, $message) {
     $logDir = "logs/{$monitorKey}";
@@ -233,10 +233,10 @@ function getLastStatusFromLog($monitorKey) {
 /**
  * Main monitoring function
  */
-function monitorSite($site) {
-    echo "Checking: {$site['name']} ({$site['url']})... ";
+function monitorService($monitor) {
+    echo "Checking: {$monitor['name']} ({$monitor['url']})... ";
     
-    $status = checkSiteStatus($site['url']);
+    $status = checkServiceStatus($monitor['url']);
     
     // Adiciona debug: mostra código HTTP e erro, se houver
     echo "[HTTP: {$status['http_code']}] ";
@@ -245,7 +245,7 @@ function monitorSite($site) {
     }
 
     // Obter IP de destino
-    $host = parse_url($site['url'], PHP_URL_HOST);
+    $host = parse_url($monitor['url'], PHP_URL_HOST);
     $ip = gethostbyname($host);
 
     // User-Agent usado
@@ -258,31 +258,31 @@ function monitorSite($site) {
     $responseSize = isset($status['response_size']) ? $status['response_size'] : '-';
 
     // Obter último status através da análise do log
-    $logDir = "logs/{$site['monitor_key']}";
+    $logDir = "logs/{$monitor['monitor_key']}";
     if (!is_dir($logDir)) {
         mkdir($logDir, 0755, true);
     }
-    $lastStatusInfo = getLastStatusFromLog($site['monitor_key']);
+    $lastStatusInfo = getLastStatusFromLog($monitor['monitor_key']);
 
     if ($status['success']) {
-        $message = "[OK] {$site['name']} | URL: {$site['url']} | HTTP: {$status['http_code']} | Tempo: " . round($status['response_time'], 2) . "s | User-Agent: {$userAgent} | IP: {$ip} | Tamanho: {$responseSize} bytes | Tipo: {$requestType} | Status: online";
+        $message = "[OK] {$monitor['name']} | URL: {$monitor['url']} | HTTP: {$status['http_code']} | Tempo: " . round($status['response_time'], 2) . "s | User-Agent: {$userAgent} | IP: {$ip} | Tamanho: {$responseSize} bytes | Tipo: {$requestType} | Status: online";
         echo "✅ OK\n";
-        writeLog($site['monitor_key'], $message);
+        writeLog($monitor['monitor_key'], $message);
         // Se estava offline antes, notificar recuperação
         if ($lastStatusInfo['status'] === 'offline') {
-            $webhookMessage = "Site {$site['name']} está online novamente. HTTP {$status['http_code']}";
-            $webhookSent = sendWebhookAlert($site['webhook'], $site['name'], 'up', $webhookMessage);
+            $webhookMessage = "Service {$monitor['name']} está online novamente. HTTP {$status['http_code']}";
+            $webhookSent = sendWebhookAlert($monitor['webhook'], $monitor['name'], 'up', $webhookMessage);
             if ($webhookSent) {
-                writeLog($site['monitor_key'], "[WEBHOOK] Recovery alert sent successfully");
+                writeLog($monitor['monitor_key'], "[WEBHOOK] Recovery alert sent successfully");
             } else {
-                writeLog($site['monitor_key'], "[WEBHOOK] Error sending recovery alert");
+                writeLog($monitor['monitor_key'], "[WEBHOOK] Error sending recovery alert");
             }
         }
     } else {
         $errorDetails = $status['error'] ? "Erro: {$status['error']}" : "HTTP {$status['http_code']}";
-        $message = "[ALERT] {$site['name']} | URL: {$site['url']} | HTTP: {$status['http_code']} | Tempo: " . round($status['response_time'], 2) . "s | User-Agent: {$userAgent} | IP: {$ip} | Tamanho: {$responseSize} bytes | Tipo: {$requestType} | Status: offline | {$errorDetails}";
+        $message = "[ALERT] {$monitor['name']} | URL: {$monitor['url']} | HTTP: {$status['http_code']} | Tempo: " . round($status['response_time'], 2) . "s | User-Agent: {$userAgent} | IP: {$ip} | Tamanho: {$responseSize} bytes | Tipo: {$requestType} | Status: offline | {$errorDetails}";
         echo "❌ FAILED\n";
-        writeLog($site['monitor_key'], $message);
+        writeLog($monitor['monitor_key'], $message);
         
         // Verificar se deve enviar notificação (evitar spam)
         $shouldSendNotification = true;
@@ -296,17 +296,17 @@ function monitorSite($site) {
             // Só enviar notificação se passou mais de 30 minutos desde a última
             if ($timeDiff < 1800) { // 30 minutos = 1800 segundos
                 $shouldSendNotification = false;
-                writeLog($site['monitor_key'], "[WEBHOOK] Skipping notification - last alert was " . round($timeDiff / 60, 1) . " minutes ago");
+                writeLog($monitor['monitor_key'], "[WEBHOOK] Skipping notification - last alert was " . round($timeDiff / 60, 1) . " minutes ago");
             }
         }
         
         if ($shouldSendNotification) {
-            $webhookMessage = "Site {$site['name']} is offline. {$errorDetails}";
-            $webhookSent = sendWebhookAlert($site['webhook'], $site['name'], 'down', $webhookMessage);
+            $webhookMessage = "Service {$monitor['name']} is offline. {$errorDetails}";
+            $webhookSent = sendWebhookAlert($monitor['webhook'], $monitor['name'], 'down', $webhookMessage);
             if ($webhookSent) {
-                writeLog($site['monitor_key'], "[WEBHOOK] Alert sent successfully");
+                writeLog($monitor['monitor_key'], "[WEBHOOK] Alert sent successfully");
             } else {
-                writeLog($site['monitor_key'], "[WEBHOOK] Error sending alert");
+                writeLog($monitor['monitor_key'], "[WEBHOOK] Error sending alert");
             }
         }
     }
@@ -321,17 +321,17 @@ function main() {
     
     // Load configurations
     $env = loadEnv();
-    $sites = extractSiteConfigs($env);
+    $monitors = extractMonitorConfigs($env);
     
-    if (empty($sites)) {
+    if (empty($monitors)) {
         die("Error: No monitors configured in .env file!\n");
     }
     
-    echo "Configured monitors: " . count($sites) . "\n\n";
+    echo "Configured monitors: " . count($monitors) . "\n\n";
     
-    // Monitor each site
-    foreach ($sites as $site) {
-        monitorSite($site);
+    // Monitor each service
+    foreach ($monitors as $monitor) {
+        monitorService($monitor);
     }
     
     echo "\n=== Check completed ===\n";
